@@ -26,12 +26,9 @@ def health_check():
 @app.post("/extract")
 def extract_entities(req: ReqModel):
     # TODO: create a schema based off of req.entity_types and observe difference in output if there is any 😼
-    schema = default_schema if not req.entity_types else req.entity_types
-    print(schema)
-
     result = extractor.extract_entities(
         req.input_text,
-        default_schema,
+        req.entity_types or default_schema,
         include_confidence=True
     )
 
