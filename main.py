@@ -1,10 +1,8 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI, Depends
 from gliner2 import GLiNER2
 
-class ReqModel(BaseModel):
-    input_text: str
-    entity_types: list[str] | None = None
+from auth import validate_auth
+from models import ReqModel
 
 app = FastAPI()
 extractor = GLiNER2.from_pretrained("fastino/gliner2-base-v1")
@@ -24,8 +22,10 @@ def health_check():
 
 
 @app.post("/extract")
-def extract_entities(req: ReqModel):
+def extract_entities(req: ReqModel, api_key: str = Depends(validate_auth)):
     # TODO: create a schema based off of req.entity_types and observe difference in output if there is any 😼
+    # TODO: mock extractor so that I can test functionality without needing the RAM of GLiNER
+    # TODO: append logs to logfile
     result = extractor.extract_entities(
         req.input_text,
         req.entity_types or default_schema,
