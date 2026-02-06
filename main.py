@@ -7,14 +7,13 @@ from models import ReqModel
 app = FastAPI()
 extractor = GLiNER2.from_pretrained("fastino/gliner2-base-v1")
 
-# default_schema = extractor.create_schema().entities({
-#     "organization": "Group, company, or institution",
-#     "location": "Geographical area such as a city, country, region, facility, or named geographic feature",
-#     "time": "Date, day, hour/minute, point in time, or period that should answer the question of when",
-#     "person": "Person",
-#     # "misc": "a miscellaneous named entity that cannot be classified into: [ORGANIZATION, LOCATION, TIME, PERSON, NUMBER] (such as events, works, laws, products, species, etc.)",
-# })
-default_schema = ["organization", "location", "time", "person"]
+default_schema = extractor.create_schema().entities({
+    "organization": "Organization, company, or institution",
+    "location": "Geographical area such as a city, country, region, facility, or named geographic feature",
+    "time": "Date, day, hour/minute, point in time, era, or period that should answer the question of 'when?'",
+    "person": "Person",
+    # "misc": "a miscellaneous named entity that cannot be classified into: [ORGANIZATION, LOCATION, TIME, PERSON, NUMBER] (such as events, works, laws, products, species, etc.)",
+})
 
 @app.get("/health")
 def health_check():
@@ -23,12 +22,14 @@ def health_check():
 
 @app.post("/extract")
 def extract_entities(req: ReqModel, api_key: str = Depends(validate_auth)):
-    # TODO: create a schema based off of req.entity_types and observe difference in output if there is any 😼
-    # TODO: mock extractor so that I can test functionality without needing the RAM of GLiNER
-    # TODO: append logs to logfile
-    result = extractor.extract_entities(
+    if not req.entity_types:
+        schema = default_schema
+    else:
+        schema = extractor.create_schema().entities(req.entity_types)
+
+    result = extractor.extract(
         req.input_text,
-        req.entity_types or default_schema,
+        schema,
         include_confidence=True
     )
 
