@@ -1,11 +1,16 @@
 from fastapi import FastAPI, Depends
 from gliner2 import GLiNER2
+from dotenv import load_dotenv
+import os
 
 from auth import validate_auth
 from models import ReqModel
 
+load_dotenv()
+model_string = "fastino/gliner2-large-v1" if os.getenv("LARGE_MODEL") else "fastino/gliner2-base-v1"
+
 app = FastAPI()
-extractor = GLiNER2.from_pretrained("fastino/gliner2-base-v1")
+extractor = GLiNER2.from_pretrained(model_string)
 
 default_schema = extractor.create_schema().entities({
     "organization": "Organization, company, or institution",
