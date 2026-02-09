@@ -2,7 +2,6 @@ from fastapi import HTTPException, Security, status
 from fastapi.security import APIKeyHeader
 from dotenv import load_dotenv
 import os
-from models import ReqModel
 
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
