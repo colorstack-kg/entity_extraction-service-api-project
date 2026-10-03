@@ -1,27 +1,112 @@
-name: Sync GitHub issues to Notion
+name: Sync GitHub issue descriptions to Notion
+
 on:
   issues:
-    types: [opened, edited, closed, reopened, assigned, unassigned, labeled, unlabeled]
+    types: [opened, edited]
+
 permissions:
   contents: read
   issues: read
+
 jobs:
-  sync:
+  sync-description:
+    name: Sync issue description
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     steps:
-      - uses: actions/github-script@v8
+      - name: Sync description to matching task
+        uses: actions/github-script@v8
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATA_SOURCE_ID: 3c713063-4721-80db-9929-000bd164ae1b
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const i=context.payload.issue,a=context.payload.action,t=process.env.NOTION_TOKEN,d=process.env.NOTION_DATA_SOURCE_ID;
-            if(!t)return core.setFailed('NOTION_TOKEN is not configured for this repository.');
-            if(!i||!['opened','edited','closed','reopened','assigned','unassigned','labeled','unlabeled'].includes(a))return;
-            const api='https:'+'//'+'api.notion.com/v1',req=async(p,o={})=>{const r=await fetch(api+p,{...o,headers:{Authorization:`Bearer ${t}`,'Notion-Version':'2026-03-11','Content-Type':'application/json',...(o.headers||{})}}),x=await r.text();if(!r.ok)throw Error(`Notion API ${r.status}: ${x}`);return x?JSON.parse(x):{}};
-            const rt=s=>{const x=[];for(let n=0;n<(s||'').length;n+=1900)x.push({type:'text',text:{content:s.slice(n,n+1900)}});return x},plain=r=>(r||[]).map(x=>x.plain_text||x.text?.content||'').join('');
-            const body=(i.body||'').trim(),desc=body.match(/^## Task description\s*\n+([\s\S]*?)(?=\n## |$)/im)?.[1].trim()||body,props={'Task name':{title:rt(i.title)},'GitHub issue':{url:i.html_url},Status:{status:{name:i.state==='closed'?'Done':'Not started'}}};
-            const q=await req(`/data_sources/${d}/query`,{method:'POST',body:JSON.stringify({filter:{property:'GitHub issue',url:{equals:i.html_url}},page_size:10})}),p=(q.results||[]).find(x=>x.object==='page');
-            if(!p){if(a!=='opened')return core.warning(`No task linked to #${i.number}`);await req('/pages',{method:'POST',body:JSON.stringify({parent:{data_source_id:d},properties:props,children:[{object:'block',type:'heading_2',heading_2:{rich_text:rt('Task description')}},{object:'block',type:'paragraph',paragraph:{rich_text:rt(desc)}}]})});return;}
-            const id=p.id.replace(/-/g,'');await req(`/pages/${id}`,{method:'PATCH',body:JSON.stringify({properties:props})});const c=await req(`/blocks/${id}/children?page_size=100`),b=c.results||[],h=b.findIndex(x=>x.type==='heading_2'&&plain(x.heading_2?.rich_text).trim()==='Task description'),target=h<0?null:b.slice(h+1).find(x=>x.type==='paragraph');if(!target)return core.setFailed('Task description paragraph not found.');await req(`/blocks/${target.id}`,{method:'PATCH',body:JSON.stringify({paragraph:{rich_text:rt(desc)}})});
+            const issue = context.payload.issue;
+            const action = context.payload.action;
+            const token = process.env.NOTION_TOKEN;
+            const dataSourceId = process.env.NOTION_DATA_SOURCE_ID;
+
+            if (!issue) {
+              core.setFailed('The issues event did not include an issue payload.');
+              return;
+            }
+            if (action === 'edited' && !Object.prototype.hasOwnProperty.call(context.payload.changes ?? {}, 'body')) {
+              core.info('Issue description did not change; no Notion update is needed.');
+              return;
+            }
+            if (!token) {
+              core.setFailed('NOTION_TOKEN is not configured for this repository.');
+              return;
+            }
+
+            const richText = (value) => {
+              const parts = [];
+              let part = '';
+              for (const character of String(value ?? '')) {
+                if (part.length + character.length > 1900) {
+                  parts.push({ type: 'text', text: { content: part } });
+                  part = '';
+                }
+                part += character;
+              }
+              if (part) parts.push({ type: 'text', text: { content: part } });
+              return parts;
+            };
+
+            const notionRequest = async (path, options = {}) => {
+              const apiBase = 'https:' + '//' + 'api.notion.com/v1';
+              const response = await fetch(apiBase + path, {
+                ...options,
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Notion-Version': '2026-03-11',
+                  'Content-Type': 'application/json',
+                  ...(options.headers || {})
+                }
+              });
+              const text = await response.text();
+              let data = {};
+              try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+              if (!response.ok) throw new Error(`Notion API ${response.status}: ${JSON.stringify(data)}`);
+              return data;
+            };
+
+            const matches = await notionRequest(`/data_sources/${dataSourceId}/query`, {
+              method: 'POST',
+              body: JSON.stringify({
+                filter: { property: 'GitHub issue', url: { equals: issue.html_url } },
+                page_size: 10
+              })
+            });
+            const task = (matches.results ?? []).find((result) => result.object === 'page');
+            const description = issue.body ?? '';
+
+            if (!task) {
+              if (action !== 'opened') {
+                core.setFailed(`No task is linked to ${issue.html_url}.`);
+                return;
+              }
+              await notionRequest('/pages', {
+                method: 'POST',
+                body: JSON.stringify({
+                  parent: { data_source_id: dataSourceId },
+                  properties: {
+                    'Task name': { title: richText(issue.title) },
+                    'GitHub issue': { url: issue.html_url },
+                    Description: { rich_text: richText(description) },
+                    Status: { status: { name: issue.state === 'closed' ? 'Done' : 'Not started' } }
+                  }
+                })
+              });
+              core.info(`Created a task for issue #${issue.number}.`);
+              return;
+            }
+
+            await notionRequest(`/pages/${task.id}`, {
+              method: 'PATCH',
+              body: JSON.stringify({
+                properties: { Description: { rich_text: richText(description) } }
+              })
+            });
+            core.info(`Updated the Description property for issue #${issue.number}.`);
