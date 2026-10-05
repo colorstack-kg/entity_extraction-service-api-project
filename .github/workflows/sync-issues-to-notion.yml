@@ -2,7 +2,7 @@ name: Sync GitHub issue pages to Notion
 
 on:
   issues:
-    types: [edited]
+    types: [opened, edited]
 
 permissions:
   contents: read
@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Sync issue body to the matching task page
+      - name: Create or sync the linked task page
         uses: actions/github-script@v8
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
@@ -22,10 +22,14 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const issue = context.payload.issue;
+            const action = context.payload.action;
             const changed = context.payload.changes ?? {};
             const token = process.env.NOTION_TOKEN;
             const dataSourceId = process.env.NOTION_DATA_SOURCE_ID;
-            if (!issue || !Object.prototype.hasOwnProperty.call(changed, 'body')) return core.info('Issue body did not change.');
+            if (!issue) return core.setFailed('No issue was included in this event.');
+            if (action !== 'opened' && !(action === 'edited' && Object.prototype.hasOwnProperty.call(changed, 'body'))) {
+              return core.info('Skipping: only new issues and issue-body edits are synced.');
+            }
             if (!token) return core.setFailed('NOTION_TOKEN is not configured for this repository.');
 
             const richText = (value) => {
@@ -64,9 +68,16 @@ jobs:
               if (!response.ok) throw new Error(`Notion API ${response.status}: ${JSON.stringify(data)}`);
               return data;
             };
+
             const matches = await request(`/data_sources/${dataSourceId}/query`, { method: 'POST', body: JSON.stringify({ filter: { property: 'GitHub issue', url: { equals: issue.html_url } }, page_size: 10 }) });
-            const task = (matches.results ?? []).find((result) => result.object === 'page');
-            if (!task) return core.setFailed(`No task is linked to ${issue.html_url}.`);
+            let task = (matches.results ?? []).find((result) => result.object === 'page');
+            let created = false;
+            if (!task) {
+              if (action !== 'opened') return core.setFailed(`No task is linked to ${issue.html_url}. Create the issue task first or reopen the issue.`);
+              task = await request('/pages', { method: 'POST', body: JSON.stringify({ parent: { type: 'data_source_id', data_source_id: dataSourceId }, properties: { 'Task name': { title: richText(issue.title) }, 'GitHub issue': { url: issue.html_url }, 'Status': { status: { name: 'Not started' } } } }) });
+              created = true;
+              core.info(`Created the KG Task for issue #${issue.number}.`);
+            }
 
             const children = []; let cursor = null;
             do {
@@ -78,10 +89,12 @@ jobs:
             const replaceable = supportingIndex >= 0 ? children.slice(0, supportingIndex) : children;
             for (const block of replaceable) await request(`/blocks/${block.id}`, { method: 'DELETE' });
 
-            const blocks = markdownBlocks(issue.body); let position = { type: 'start' };
+            const blocks = markdownBlocks(issue.body);
+            if (created) blocks.push({ object: 'block', type: 'heading_2', heading_2: { rich_text: richText('Supporting files') } });
+            let position = { type: 'start' };
             for (let i = 0; i < blocks.length; i += 100) {
               const appended = await request(`/blocks/${task.id}/children`, { method: 'PATCH', body: JSON.stringify({ children: blocks.slice(i, i + 100), position }) });
               const last = appended.results?.at(-1)?.id;
               position = last ? { type: 'after_block', after_block: { id: last } } : { type: 'end' };
             }
-            core.info(`Updated the Notion page content for issue #${issue.number}.`);
+            core.info(`${created ? 'Created and populated' : 'Updated'} the Notion task for issue #${issue.number}.`);
